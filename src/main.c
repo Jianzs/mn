@@ -70,7 +70,7 @@ int parse_task_stats(struct nl_msg* msg, void* arg) {
     return NL_STOP;
 }
 
-int query_task_stats(struct nl_sock* netlink_socket, int family_id,
+int send_task_stats_query(struct nl_sock* netlink_socket, int family_id,
                      int command_type, int parameter,
                      struct TaskStatistics* stats) {
     memset(stats, 0, sizeof(*stats));
@@ -206,64 +206,74 @@ void print_task_stats(const struct TaskStatistics* stats,
 }
 
 void print_usage() {
-  printf("Linux task stats reporting tool\n"
+  printf("Linux task stats monitor tool\n"
          "\n"
-         "Usage: taskstats [options]\n"
+         "Usage: mn [options] [-- custom command]\n"
          "\n"
          "Options:\n"
          "  --help        This text\n"
-         "  --pid PID     Print stats for the process id PID\n"
+         "  --pid PID     Print stats for the process id PID, ignore when "
+         "custom command is not empty\n"
          "  --tgid TGID   Print stats for the thread group id TGID\n"
          "  --raw         Print raw numbers instead of human readable units\n"
          "\n"
-         "Either PID or TGID must be specified. For more documentation about "
-         "the reported fields, see\n"
+         "Either PID or TGID or CUSTOM COMMAND must be specified. For more "
+         "documentation about the reported fields, see\n"
          "https://www.kernel.org/doc/Documentation/accounting/"
          "taskstats-struct.txt\n");
 }
 
 int main(int argc, char** argv) {
-    // int command_type = 0;
-    // int pid = 0;
-    // int human_readable = 1;
-    // const struct option long_options[] = {
-    //     {"help", no_argument, 0, 0},
-    //     {"pid", required_argument, 0, 0},
-    //     {"tgid", required_argument, 0, 0},
-    //     {"raw", no_argument, 0, 0},
-    //     {0, 0, 0, 0}
-    // };
-    // while (1) {
-    //     int option_index;
-    //     int option_char = getopt_long_only(argc, argv, "", long_options,
-    //                                        &option_index);
-    //     if (option_char == -1) {
-    //         break;
-    //     }
-    //     switch (option_index) {
-    //         case 0:
-    //             print_usage();
-    //             return EXIT_SUCCESS;
-    //         case 1:
-    //             command_type = TASKSTATS_CMD_ATTR_PID;
-    //             pid = atoi(optarg);
-    //             break;
-    //         case 2:
-    //             command_type = TASKSTATS_CMD_ATTR_TGID;
-    //             pid = atoi(optarg);
-    //             break;
-    //         case 3:
-    //             human_readable = 0;
-    //             break;
-    //         default:
-    //             break;
-    //     };
-    // }
-    // if (!pid) {
-    //     printf("Either PID or TGID must be specified\n");
-    //     return EXIT_FAILURE;
-    // }
+    /* parse command line parameters */
+    int command_type = 0;
+    int pid = 0;
+    int human_readable = 1;
+    int custom_cmd_len = 0;
+    char* custom_cmd_arg = NULL;
+    const struct option long_options[] = {
+        {"help", no_argument, 0, 0},
+        {"pid", required_argument, 0, 0},
+        {"tgid", required_argument, 0, 0},
+        {"raw", no_argument, 0, 0},
+        {0, 0, 0, 0}
+    };
+    while (1) {
+        int option_index = 0;
+        int option_char = getopt_long_only(argc, argv, "", long_options,
+                                           &option_index);
+        if (option_char == -1) {
+            break;
+        }
+        switch (option_index) {
+            case 0:
+                print_usage();
+                return EXIT_SUCCESS;
+            case 1:
+                command_type = TASKSTATS_CMD_ATTR_PID;
+                pid = atoi(optarg);
+                break;
+            case 2:
+                command_type = TASKSTATS_CMD_ATTR_TGID;
+                pid = atoi(optarg);
+                break;
+            case 3:
+                human_readable = 0;
+                break;
+            default:
+                break;
+        };
+    }
+    custom_cmd_len = argc - optind;
+    custom_cmd_arg = argv + optind;
+    if (custom_cmd_len) {
+        command_type = TASKSTATS_CMD_ATTR_PID;
+    }
+    if (!pid && !custom_cmd_len) {
+        printf("Either PID or TGID or CUSTOM COMMAND must be specified\n");
+        return EXIT_FAILURE;
+    }
 
+    /* generate netlink connection */
     struct nl_sock* netlink_socket = nl_socket_alloc();
     if (!netlink_socket) {
         fprintf(stderr, "Unable to allocate netlink socket\n");
@@ -281,24 +291,25 @@ int main(int argc, char** argv) {
         goto error;
     }
 
-    int command_type = TASKSTATS_CMD_ATTR_PID;
-    int human_readable = 1;
-    int pid = exec_command(argc - 1, argv + 1);
-    // int pid = 23033;
-
+    /* register callback */
     struct TaskStatistics stats;
     struct nl_cb* callbacks = nl_cb_get(nl_cb_alloc(NL_CB_CUSTOM));
     nl_cb_set(callbacks, NL_CB_MSG_IN, NL_CB_CUSTOM, &parse_task_stats, &stats);
     nl_cb_err(callbacks, NL_CB_CUSTOM, &print_receive_error, &family_id);
     
+    /* run custom command */
+    if (custom_cmd_len) {
+        pid = exec_command(custom_cmd_len, custom_cmd_arg);
+    }
+
+    /* monitor the target process */
     for (int i = 0; i < 400; i++) {
-        ret = query_task_stats(netlink_socket, family_id, command_type, pid, 
+        ret = send_task_stats_query(netlink_socket, family_id, command_type, pid, 
                                &stats);
         if (ret) {
             nl_perror("Failed to query taskstats");
             goto error;
         }
-
         ret = nl_recvmsgs(netlink_socket, callbacks);
         if (ret) {
             nl_perror("Failed to receive message");
@@ -313,6 +324,7 @@ int main(int argc, char** argv) {
     nl_cb_put(callbacks);
     nl_socket_free(netlink_socket);
     return EXIT_SUCCESS;
+
 error:
     if (netlink_socket) {
         nl_socket_free(netlink_socket);
