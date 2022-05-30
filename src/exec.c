@@ -1,42 +1,45 @@
 #include "exec.h"
 
-int exec_command(int argc, char *argv[]) {
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <string.h>
+#include <sys/wait.h>
+#include <errno.h>
+#include <fcntl.h>
+#include "common.h"
+
+int exec_command(int argc, char *argv[], char* redict_out) {
     if (argc < 1) {
-        printf("command not found");
-        exit(1);
+        printf("argc is zero, command must be specified");
+        return 1;
     }
 
-    int pid = getpid();
-
-    // prepare command and arguments
+    /* prepare command and arguments */
     int exec_argc = argc + 1;
     char* exec_argv[exec_argc];
     for (int i = 0; i < exec_argc-1; i++)
         exec_argv[i] = argv[i];
     exec_argv[exec_argc-1] = NULL;
 
-    // show command
-    DEBUG_PRINT("run command: \n");
-    for (int i = 0; i < exec_argc-1; i++)
-        DEBUG_PRINT("   %s \n", exec_argv[i]);
-
-    // execute command
-    int exec_pid = vfork();
-    if(exec_pid == 0) {  // child process
-        // redirect stdout and stderr to /dev/null
-        // int fd = open("/dev/null", O_WRONLY);
-        // dup2(fd, 1);
-        // dup2(fd, 2);
-        // close(fd);
-
-        DEBUG_PRINT("+ Before execvp: %lld\n", get_ns_timestamp());
-        execvp(exec_argv[0], exec_argv);
-    
-    } else {  // parent process
-        return exec_pid;
-        // printf("Child  PID is %d\n", exec_pid);
-        wait(NULL);  // wait for child process to finish
-        DEBUG_PRINT("+ Child exited : %lld\n", get_ns_timestamp());
+    /* show command need to run */
+    printf("%-25s ", "run command:");
+    for (int i = 0; i < exec_argc-1; i++) {
+        printf(" %s", exec_argv[i]);
     }
-    return 0;
+    printf("\n");
+
+    /* execute command */
+    int exec_pid = fork();
+    if(exec_pid == 0) {  // child process
+        // redirect stdout and stderr to custom file
+        if (redict_out) {
+            int fd = open(redict_out, O_WRONLY|O_CREAT);
+            dup2(fd, STDOUT_FILENO);
+            dup2(fd, STDERR_FILENO);
+            close(fd);
+        }
+        execvp(exec_argv[0], exec_argv);
+    }
+    return exec_pid;
 }

@@ -4,7 +4,7 @@ project(mn)
 set(CMAKE_C_STANDARD 11)
 # set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unused-variable -Wno-unused-parameter")
 
-include_directories(include)
+include_directories(include /usr/include/libnl3)
 
 aux_source_directory(src source_list)
 add_executable(mn ${source_list})

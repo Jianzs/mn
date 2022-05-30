@@ -8,10 +8,10 @@
 #include <getopt.h>
 #include <netlink/msg.h>
 #include <netlink/attr.h>
+#include <netlink/socket.h> 
 #include <netlink/handlers.h>
 #include <netlink/genl/genl.h>
 #include <netlink/genl/ctrl.h>
-#include <linux/taskstats.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/cdefs.h>
@@ -19,12 +19,7 @@
 #include <unistd.h>
 
 #include "exec.h"
-
-struct TaskStatistics {
-    int pid;
-    int tgid;
-    struct taskstats stats;
-};
+#include "taskstats.h"
 
 int print_receive_error(struct sockaddr_nl* address,
                         struct nlmsgerr* error, void* arg) {
@@ -83,139 +78,18 @@ int send_task_stats_query(struct nl_sock* netlink_socket, int family_id,
     return result < 0;
 }
 
-double average_ms(unsigned long long total, unsigned long long count) {
-    if (!count) {
-        return 0;
-    }
-    return ((double)total) / count / 1e6;
-}
-
-unsigned long long average_ns(unsigned long long total,
-                              unsigned long long count) {
-    if (!count) {
-        return 0;
-    }
-    return total / count;
-}
-
-void print_task_stats(const struct TaskStatistics* stats,
-                      int human_readable) {
-    const struct taskstats* s = &stats->stats;
-    printf("Basic task statistics\n");
-    printf("---------------------\n");
-    printf("%-25s%d\n", "Stats version:", s->version);
-    printf("%-25s%d\n", "Exit code:", s->ac_exitcode);
-    printf("%-25s0x%x\n", "Flags:", s->ac_flag);
-    printf("%-25s%d\n", "Nice value:", s->ac_nice);
-    printf("%-25s%s\n", "Command name:", s->ac_comm);
-    printf("%-25s%d\n", "Scheduling discipline:", s->ac_sched);
-    printf("%-25s%d\n", "UID:", s->ac_uid);
-    printf("%-25s%d\n", "GID:", s->ac_gid);
-    printf("%-25s%d\n", "PID:", s->ac_pid);
-    printf("%-25s%d\n", "PPID:", s->ac_ppid);
-    if (human_readable) {
-        time_t begin_time = s->ac_btime;
-        printf("%-25s%s", "Begin time:", ctime(&begin_time));
-    } else {
-        printf("%-25s%d sec\n", "Begin time:", s->ac_btime);
-    }
-    printf("%-25s%llu usec\n", "Elapsed time:", s->ac_etime);
-    printf("%-25s%llu usec\n", "User CPU time:", s->ac_utime);
-    printf("%-25s%llu\n", "Minor page faults:", s->ac_minflt);
-    printf("%-25s%llu\n", "Major page faults:", s->ac_majflt);
-    printf("%-25s%llu usec\n", "Scaled user time:", s->ac_utimescaled);
-    printf("%-25s%llu usec\n", "Scaled system time:", s->ac_stimescaled);
-    printf("\nDelay accounting\n");
-    printf("----------------\n");
-    printf("       %15s%15s%15s%15s%15s%15s\n",
-           "Count",
-           human_readable ? "Delay (ms)" : "Delay (ns)",
-           "Average delay",
-           "Real delay",
-           "Scaled real",
-           "Virtual delay");
-    if (!human_readable) {
-        printf("CPU    %15llu%15llu%15llu%15llu%15llu%15llu\n",
-               s->cpu_count,
-               s->cpu_delay_total,
-               average_ns(s->cpu_delay_total, s->cpu_count),
-               s->cpu_run_real_total,
-               s->cpu_scaled_run_real_total,
-               s->cpu_run_virtual_total);
-        printf("IO     %15llu%15llu%15llu\n",
-               s->blkio_count,
-               s->blkio_delay_total,
-               average_ns(s->blkio_delay_total, s->blkio_count));
-        printf("Swap   %15llu%15llu%15llu\n",
-               s->swapin_count,
-               s->swapin_delay_total,
-               average_ns(s->swapin_delay_total, s->swapin_count));
-        printf("Reclaim%15llu%15llu%15llu\n",
-               s->freepages_count,
-               s->freepages_delay_total,
-               average_ns(s->freepages_delay_total, s->freepages_count));
-    } else {
-        const double ms_per_ns = 1e6;
-        printf("CPU    %15llu%15.3f%15.3f%15.3f%15.3f%15.3f\n",
-               s->cpu_count,
-               s->cpu_delay_total / ms_per_ns,
-               average_ms(s->cpu_delay_total, s->cpu_count),
-               s->cpu_run_real_total / ms_per_ns,
-               s->cpu_scaled_run_real_total / ms_per_ns,
-               s->cpu_run_virtual_total / ms_per_ns);
-        printf("IO     %15llu%15.3f%15.3f\n",
-               s->blkio_count,
-               s->blkio_delay_total / ms_per_ns,
-               average_ms(s->blkio_delay_total, s->blkio_count));
-        printf("Swap   %15llu%15.3f%15.3f\n",
-               s->swapin_count,
-               s->swapin_delay_total / ms_per_ns,
-               average_ms(s->swapin_delay_total, s->swapin_count));
-        printf("Reclaim%15llu%15.3f%15.3f\n",
-               s->freepages_count,
-               s->freepages_delay_total / ms_per_ns,
-               average_ms(s->freepages_delay_total, s->freepages_count));
-    }
-    printf("\nExtended accounting fields\n");
-    printf("--------------------------\n");
-    if (human_readable && s->ac_stime) {
-        printf("%-25s%.3f MB\n", "Average RSS usage:",
-               (double)s->coremem / s->ac_stime);
-        printf("%-25s%.3f MB\n", "Average VM usage:",
-               (double)s->virtmem / s->ac_stime);
-    } else {
-        printf("%-25s%llu MB\n", "Accumulated RSS usage:", s->coremem);
-        printf("%-25s%llu MB\n", "Accumulated VM usage:", s->virtmem);
-    }
-    printf("%-25s%llu KB\n", "RSS high water mark:", s->hiwater_rss);
-    printf("%-25s%llu KB\n", "VM high water mark:", s->hiwater_vm);
-    printf("%-25s%llu\n", "IO bytes read:", s->read_char);
-    printf("%-25s%llu\n", "IO bytes written:", s->write_char);
-    printf("%-25s%llu\n", "IO read syscalls:", s->read_syscalls);
-    printf("%-25s%llu\n", "IO write syscalls:", s->write_syscalls);
-    printf("\nPer-task/thread statistics\n");
-    printf("--------------------------\n");
-    printf("%-25s%llu\n", "Voluntary switches:", s->nvcsw);
-    printf("%-25s%llu\n", "Involuntary switches:", s->nivcsw);
-#if TASKSTATS_VERSION > 8
-    if (s->version > 8) {
-        printf("%-25s%llu\n", "Thrashing count:", s->thrashing_count);
-        printf("%-25s%llu\n", "Thrashing delay total:", s->thrashing_delay_total);
-    }
-#endif
-}
-
 void print_usage() {
   printf("Linux task stats monitor tool\n"
          "\n"
          "Usage: mn [options] [-- custom command]\n"
          "\n"
          "Options:\n"
-         "  --help        This text\n"
-         "  --pid PID     Print stats for the process id PID, ignore when "
+         "  --help           Print this usage\n"
+         "  --pid PID        Print stats for the process id PID, ignore when "
          "custom command is not empty\n"
-         "  --tgid TGID   Print stats for the thread group id TGID\n"
-         "  --raw         Print raw numbers instead of human readable units\n"
+         "  --tgid TGID      Print stats for the thread group id TGID\n"
+         "  --raw            Print raw numbers instead of human readable units\n"
+         "  --cmd-out FILE   Redict stdout and stderr to the FILE\n"
          "\n"
          "Either PID or TGID or CUSTOM COMMAND must be specified. For more "
          "documentation about the reported fields, see\n"
@@ -229,12 +103,14 @@ int main(int argc, char** argv) {
     int pid = 0;
     int human_readable = 1;
     int custom_cmd_len = 0;
-    char* custom_cmd_arg = NULL;
+    char** custom_cmd_arg = NULL;
+    char* custom_cmd_out = NULL;
     const struct option long_options[] = {
         {"help", no_argument, 0, 0},
         {"pid", required_argument, 0, 0},
         {"tgid", required_argument, 0, 0},
         {"raw", no_argument, 0, 0},
+        {"cmd-out", required_argument, 0, 0},
         {0, 0, 0, 0}
     };
     while (1) {
@@ -259,6 +135,9 @@ int main(int argc, char** argv) {
             case 3:
                 human_readable = 0;
                 break;
+            case 4:
+                custom_cmd_out = optarg;
+                break;
             default:
                 break;
         };
@@ -281,12 +160,12 @@ int main(int argc, char** argv) {
     }
     int ret = genl_connect(netlink_socket);
     if (ret < 0) {
-        nl_perror("Unable to open netlink socket (are you root?)");
+        nl_perror(ret, "Unable to open netlink socket (are you root?)");
         goto error;
     }
     int family_id = genl_ctrl_resolve(netlink_socket, TASKSTATS_GENL_NAME);
     if (family_id < 0) {
-        nl_perror("Unable to determine taskstats family id "
+        nl_perror(family_id, "Unable to determine taskstats family id "
                   "(does your kernel support taskstats?)");
         goto error;
     }
@@ -299,7 +178,7 @@ int main(int argc, char** argv) {
     
     /* run custom command */
     if (custom_cmd_len) {
-        pid = exec_command(custom_cmd_len, custom_cmd_arg);
+        pid = exec_command(custom_cmd_len, custom_cmd_arg, custom_cmd_out);
     }
 
     /* monitor the target process */
@@ -307,17 +186,16 @@ int main(int argc, char** argv) {
         ret = send_task_stats_query(netlink_socket, family_id, command_type, pid, 
                                &stats);
         if (ret) {
-            nl_perror("Failed to query taskstats");
+            nl_perror(ret, "Failed to query taskstats");
             goto error;
         }
         ret = nl_recvmsgs(netlink_socket, callbacks);
         if (ret) {
-            nl_perror("Failed to receive message");
+            nl_perror(ret, "Failed to receive message");
             goto error;
         }
 
         print_task_stats(&stats, human_readable);
-        printf("~~~~~~~~~~~~~~~~~~~~~~~\n");
         usleep(500000);
     }
     
