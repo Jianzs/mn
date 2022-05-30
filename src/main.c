@@ -1,19 +1,4 @@
 /*
- * Copyright (C) 2013 The Android Open Source Project
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-/*
  * Linux task stats reporting tool. Queries and prints out the kernel's
  * taskstats structure for a given process or thread group id. See
  * https://www.kernel.org/doc/Documentation/accounting/ for more information
@@ -21,76 +6,35 @@
  */
 #include <errno.h>
 #include <getopt.h>
-#include <netlink/attr.h>
-#include <netlink/genl/genl.h>
-#include <netlink/handlers.h>
 #include <netlink/msg.h>
+#include <netlink/attr.h>
+#include <netlink/handlers.h>
+#include <netlink/genl/genl.h>
+#include <netlink/genl/ctrl.h>
+#include <linux/taskstats.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/cdefs.h>
 #include <time.h>
 #include <unistd.h>
+
+#include "exec.h"
+
 struct TaskStatistics {
     int pid;
     int tgid;
     struct taskstats stats;
 };
-int send_command(struct nl_sock* netlink_socket, uint16_t nlmsg_type,
-                 uint32_t nlmsg_pid, uint8_t genl_cmd, uint16_t nla_type,
-                 void* nla_data, int nla_len) {
-    struct nl_msg* message = nlmsg_alloc();
-    int seq = 0;
-    int version = 1;
-    int header_length = 0;
-    int flags = NLM_F_REQUEST;
-    genlmsg_put(message, nlmsg_pid, seq, nlmsg_type, header_length, flags,
-                genl_cmd, version);
-    nla_put(message, nla_type, nla_len, nla_data);
-    /* Override the header flags since we don't want NLM_F_ACK. */
-    struct nlmsghdr* header = nlmsg_hdr(message);
-    header->nlmsg_flags = flags;
-    int result = nl_send(netlink_socket, message);
-    nlmsg_free(message);
-    return result;
-}
-int print_receive_error(struct sockaddr_nl* address __unused,
-                        struct nlmsgerr* error, void* arg __unused) {
+
+int print_receive_error(struct sockaddr_nl* address,
+                        struct nlmsgerr* error, void* arg) {
     fprintf(stderr, "Netlink receive error: %s\n", strerror(-error->error));
     return NL_STOP;
 }
-int parse_family_id(struct nl_msg* msg, void* arg) {
-    struct genlmsghdr* gnlh = (struct genlmsghdr*)nlmsg_data(nlmsg_hdr(msg));
-    struct nlattr* attr = genlmsg_attrdata(gnlh, 0);
-    int remaining = genlmsg_attrlen(gnlh, 0);
-    do {
-        if (attr->nla_type == CTRL_ATTR_FAMILY_ID) {
-            *((int*)arg) = nla_get_u16(attr);
-            return NL_STOP;
-        }
-    } while ((attr = nla_next(attr, &remaining)));
-    return NL_OK;
-}
-int get_family_id(struct nl_sock* netlink_socket, const char* name) {
-    if (send_command(netlink_socket, GENL_ID_CTRL, getpid(),
-                     CTRL_CMD_GETFAMILY,
-                     CTRL_ATTR_FAMILY_NAME,
-                     (void*)name, strlen(name) + 1) < 0) {
-        return 0;
-    }
-    int family_id = 0;
-    struct nl_cb* callbacks = nl_cb_get(nl_cb_alloc(NL_CB_VALID));
-    nl_cb_set(callbacks, NL_CB_VALID, NL_CB_DEFAULT, &parse_family_id,
-              &family_id);
-    nl_cb_err(callbacks, NL_CB_DEFAULT, &print_receive_error, NULL);
-    if (nl_recvmsgs(netlink_socket, callbacks) < 0) {
-        return 0;
-    }
-    nl_cb_put(callbacks);
-    return family_id;
-}
+
 void parse_aggregate_task_stats(struct nlattr* attr, int attr_size,
                                 struct TaskStatistics* stats) {
-    do {
+    nla_for_each_attr(attr, attr, attr_size, attr_size) {
         switch (attr->nla_type) {
             case TASKSTATS_TYPE_PID:
                 stats->pid = nla_get_u32(attr);
@@ -104,14 +48,15 @@ void parse_aggregate_task_stats(struct nlattr* attr, int attr_size,
             default:
                 break;
         }
-    } while ((attr = nla_next(attr, &attr_size)));
+    }
 }
+
 int parse_task_stats(struct nl_msg* msg, void* arg) {
     struct TaskStatistics* stats = (struct TaskStatistics*)arg;
     struct genlmsghdr* gnlh = (struct genlmsghdr*)nlmsg_data(nlmsg_hdr(msg));
     struct nlattr* attr = genlmsg_attrdata(gnlh, 0);
     int remaining = genlmsg_attrlen(gnlh, 0);
-    do {
+    nla_for_each_attr(attr, attr, remaining, remaining) {
         switch (attr->nla_type) {
             case TASKSTATS_TYPE_AGGR_PID:
             case TASKSTATS_TYPE_AGGR_TGID:
@@ -121,35 +66,30 @@ int parse_task_stats(struct nl_msg* msg, void* arg) {
             default:
                 break;
         }
-    } while ((attr = nla_next(attr, &remaining)));
+    }
     return NL_STOP;
 }
+
 int query_task_stats(struct nl_sock* netlink_socket, int family_id,
                      int command_type, int parameter,
                      struct TaskStatistics* stats) {
     memset(stats, 0, sizeof(*stats));
-    int result = send_command(netlink_socket, family_id, getpid(),
-                              TASKSTATS_CMD_GET, command_type, &parameter,
-                              sizeof(parameter));
-    if (result < 0) {
-        return result;
-    }
-    struct nl_cb* callbacks = nl_cb_get(nl_cb_alloc(NL_CB_VALID));
-    nl_cb_set(callbacks, NL_CB_VALID, NL_CB_DEFAULT, &parse_task_stats, stats);
-    nl_cb_err(callbacks, NL_CB_DEFAULT, &print_receive_error, &family_id);
-    result = nl_recvmsgs(netlink_socket, callbacks);
-    if (result < 0) {
-        return result;
-    }
-    nl_cb_put(callbacks);
-    return stats->pid || stats->tgid;
+    struct nl_msg* message = nlmsg_alloc();
+    genlmsg_put(message, NL_AUTO_PID, NL_AUTO_SEQ, family_id, 0, NLM_F_REQUEST,
+		        TASKSTATS_CMD_GET, TASKSTATS_VERSION);
+    nla_put_u32(message, command_type, parameter);
+    int result = nl_send(netlink_socket, message);
+    nlmsg_free(message);
+    return result < 0;
 }
+
 double average_ms(unsigned long long total, unsigned long long count) {
     if (!count) {
         return 0;
     }
     return ((double)total) / count / 1e6;
 }
+
 unsigned long long average_ns(unsigned long long total,
                               unsigned long long count) {
     if (!count) {
@@ -157,6 +97,7 @@ unsigned long long average_ns(unsigned long long total,
     }
     return total / count;
 }
+
 void print_task_stats(const struct TaskStatistics* stats,
                       int human_readable) {
     const struct taskstats* s = &stats->stats;
@@ -256,7 +197,14 @@ void print_task_stats(const struct TaskStatistics* stats,
     printf("--------------------------\n");
     printf("%-25s%llu\n", "Voluntary switches:", s->nvcsw);
     printf("%-25s%llu\n", "Involuntary switches:", s->nivcsw);
+#if TASKSTATS_VERSION > 8
+    if (s->version > 8) {
+        printf("%-25s%llu\n", "Thrashing count:", s->thrashing_count);
+        printf("%-25s%llu\n", "Thrashing delay total:", s->thrashing_delay_total);
+    }
+#endif
 }
+
 void print_usage() {
   printf("Linux task stats reporting tool\n"
          "\n"
@@ -273,65 +221,96 @@ void print_usage() {
          "https://www.kernel.org/doc/Documentation/accounting/"
          "taskstats-struct.txt\n");
 }
+
 int main(int argc, char** argv) {
-    int command_type = 0;
-    int pid = 0;
-    int human_readable = 1;
-    const struct option long_options[] = {
-        {"help", no_argument, 0, 0},
-        {"pid", required_argument, 0, 0},
-        {"tgid", required_argument, 0, 0},
-        {"raw", no_argument, 0, 0},
-        {0, 0, 0, 0}
-    };
-    while (1) {
-        int option_index;
-        int option_char = getopt_long_only(argc, argv, "", long_options,
-                                           &option_index);
-        if (option_char == -1) {
-            break;
-        }
-        switch (option_index) {
-            case 0:
-                print_usage();
-                return EXIT_SUCCESS;
-            case 1:
-                command_type = TASKSTATS_CMD_ATTR_PID;
-                pid = atoi(optarg);
-                break;
-            case 2:
-                command_type = TASKSTATS_CMD_ATTR_TGID;
-                pid = atoi(optarg);
-                break;
-            case 3:
-                human_readable = 0;
-                break;
-            default:
-                break;
-        };
-    }
-    if (!pid) {
-        printf("Either PID or TGID must be specified\n");
-        return EXIT_FAILURE;
-    }
+    // int command_type = 0;
+    // int pid = 0;
+    // int human_readable = 1;
+    // const struct option long_options[] = {
+    //     {"help", no_argument, 0, 0},
+    //     {"pid", required_argument, 0, 0},
+    //     {"tgid", required_argument, 0, 0},
+    //     {"raw", no_argument, 0, 0},
+    //     {0, 0, 0, 0}
+    // };
+    // while (1) {
+    //     int option_index;
+    //     int option_char = getopt_long_only(argc, argv, "", long_options,
+    //                                        &option_index);
+    //     if (option_char == -1) {
+    //         break;
+    //     }
+    //     switch (option_index) {
+    //         case 0:
+    //             print_usage();
+    //             return EXIT_SUCCESS;
+    //         case 1:
+    //             command_type = TASKSTATS_CMD_ATTR_PID;
+    //             pid = atoi(optarg);
+    //             break;
+    //         case 2:
+    //             command_type = TASKSTATS_CMD_ATTR_TGID;
+    //             pid = atoi(optarg);
+    //             break;
+    //         case 3:
+    //             human_readable = 0;
+    //             break;
+    //         default:
+    //             break;
+    //     };
+    // }
+    // if (!pid) {
+    //     printf("Either PID or TGID must be specified\n");
+    //     return EXIT_FAILURE;
+    // }
+
     struct nl_sock* netlink_socket = nl_socket_alloc();
-    if (!netlink_socket || genl_connect(netlink_socket) < 0) {
-        perror("Unable to open netlink socket (are you root?)");
+    if (!netlink_socket) {
+        fprintf(stderr, "Unable to allocate netlink socket\n");
         goto error;
     }
-    int family_id = get_family_id(netlink_socket, TASKSTATS_GENL_NAME);
-    if (!family_id) {
-        perror("Unable to determine taskstats family id "
-               "(does your kernel support taskstats?)");
+    int ret = genl_connect(netlink_socket);
+    if (ret < 0) {
+        nl_perror("Unable to open netlink socket (are you root?)");
         goto error;
     }
+    int family_id = genl_ctrl_resolve(netlink_socket, TASKSTATS_GENL_NAME);
+    if (family_id < 0) {
+        nl_perror("Unable to determine taskstats family id "
+                  "(does your kernel support taskstats?)");
+        goto error;
+    }
+
+    int command_type = TASKSTATS_CMD_ATTR_PID;
+    int human_readable = 1;
+    int pid = exec_command(argc - 1, argv + 1);
+    // int pid = 23033;
+
     struct TaskStatistics stats;
-    if (query_task_stats(netlink_socket, family_id, command_type, pid,
-                         &stats) < 0) {
-        perror("Failed to query taskstats");
-        goto error;
+    struct nl_cb* callbacks = nl_cb_get(nl_cb_alloc(NL_CB_CUSTOM));
+    nl_cb_set(callbacks, NL_CB_MSG_IN, NL_CB_CUSTOM, &parse_task_stats, &stats);
+    nl_cb_err(callbacks, NL_CB_CUSTOM, &print_receive_error, &family_id);
+    
+    for (int i = 0; i < 400; i++) {
+        ret = query_task_stats(netlink_socket, family_id, command_type, pid, 
+                               &stats);
+        if (ret) {
+            nl_perror("Failed to query taskstats");
+            goto error;
+        }
+
+        ret = nl_recvmsgs(netlink_socket, callbacks);
+        if (ret) {
+            nl_perror("Failed to receive message");
+            goto error;
+        }
+
+        print_task_stats(&stats, human_readable);
+        printf("~~~~~~~~~~~~~~~~~~~~~~~\n");
+        usleep(500000);
     }
-    print_task_stats(&stats, human_readable);
+    
+    nl_cb_put(callbacks);
     nl_socket_free(netlink_socket);
     return EXIT_SUCCESS;
 error:
