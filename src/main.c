@@ -80,6 +80,7 @@ int parse_task_stats(struct nl_msg* msg, void* arg) {
 struct TaskstatsThreadArgs {
     struct ConcurrentQueue *que;
     FILE *file;
+    int human_readable;
 };
 
 void * process_task_stats(void *arg) {
@@ -87,7 +88,7 @@ void * process_task_stats(void *arg) {
     struct TaskStatistics *stats;
     while ((stats = concurrent_queue_pop(args->que)) != NULL) {
         if (args->file == NULL) {
-            print_task_stats(stats);
+            print_task_stats(stats, args->human_readable);
         } else {
             char buf[200];
             task_stats2str(stats, buf, 200);
@@ -120,6 +121,7 @@ void print_usage() {
          "  --pid PID        Print stats for the process id PID, ignore when "
          "custom command is not empty\n"
          "  --tgid TGID      Print stats for the thread group id TGID\n"
+         "  --period MS      Set the query period in millsecond, default 100ms\n"
          "  --raw            Print raw numbers instead of human readable units\n"
          "  --out FILE       Write the record to the FILE, order of the columns "
          "is the same as in the URL below\n"
@@ -140,7 +142,8 @@ int main(int argc, char** argv) {
     int custom_cmd_len = 0;
     char **custom_cmd_arg = NULL;
     char *custom_cmd_out = NULL;
-    
+    int period = 100 * MILL_SECOND;
+
     const struct option long_options[] = {
         {"help", no_argument, 0, 0},
         {"pid", required_argument, 0, 0},
@@ -148,6 +151,7 @@ int main(int argc, char** argv) {
         {"raw", no_argument, 0, 0},
         {"out", required_argument, 0, 0},
         {"cmd-out", required_argument, 0, 0},
+        {"period", required_argument, 0, 0},
         {0, 0, 0, 0}
     };
 
@@ -181,6 +185,9 @@ int main(int argc, char** argv) {
                 }
             case 5:
                 custom_cmd_out = optarg;
+                break;
+            case 6:
+                period = atoi(optarg) * MILL_SECOND;
                 break;
             default:
                 break;
@@ -221,7 +228,8 @@ int main(int argc, char** argv) {
     /* create thread for processing task stats */
     struct TaskstatsThreadArgs args = {
         .que = &que,
-        .file = out_file
+        .file = out_file,
+        .human_readable = human_readable
     };
     pthread_t process_task_stats_thread;
     ret = pthread_create(&process_task_stats_thread, NULL, &process_task_stats, 
@@ -259,7 +267,7 @@ int main(int argc, char** argv) {
         if (kill(pid, 0)) {
             break;
         }
-        t_next_iter += 1 * MILL_SECOND;
+        t_next_iter += period;
         sleep_until(t_next_iter);
     } while (1);
     concurrent_queue_push(&que, NULL);
