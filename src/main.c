@@ -121,7 +121,7 @@ void print_usage() {
          "  --pid PID        Print stats for the process id PID, ignore when "
          "custom command is not empty\n"
          "  --tgid TGID      Print stats for the thread group id TGID\n"
-         "  --period MS      Set the query period in millsecond, default 100ms\n"
+         "  --period MS      Set the query period in millsecond, default 1000ms\n"
          "  --raw            Print raw numbers instead of human readable units\n"
          "  --out FILE       Write the record to the FILE, order of the columns "
          "is the same as in the URL below\n"
@@ -142,7 +142,7 @@ int main(int argc, char** argv) {
     int custom_cmd_len = 0;
     char **custom_cmd_arg = NULL;
     char *custom_cmd_out = NULL;
-    int period = 100 * MILL_SECOND;
+    int period = 1000 * MILL_SECOND;
 
     const struct option long_options[] = {
         {"help", no_argument, 0, 0},

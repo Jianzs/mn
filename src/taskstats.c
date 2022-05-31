@@ -125,54 +125,57 @@ char* task_stats2str(const struct TaskStatistics* stats, char* buf, size_t len) 
     char * const buf_orig = buf;
     const struct taskstats* s = &stats->stats;
     int l;
-#define snprint(d) do{l = snprintf(buf, len, "%llu\t", d); buf += l; len -= l;}while(0)
+#define snprintllu(d) do{l = snprintf(buf, len, "%llu\t", d); buf += l; len -= l;}while(0)
     /* 1) Common and basic accounting fields: */
 	/* The version number of this struct. This field is always set to
 	 * TAKSTATS_VERSION, which is defined in <linux/taskstats.h>.
 	 * Each time the struct is changed, the value should be incremented.
 	 */
-	// snprint(s->version);
+	// snprintllu(s->version);
 
   	/* The exit code of a task. */
-	// snprint(s->ac_exitcode);		/* Exit status */
+	// snprintllu(s->ac_exitcode);		/* Exit status */
 
   	/* The accounting flags of a task as defined in <linux/acct.h>
 	 * Defined values are AFORK, ASU, ACOMPAT, ACORE, and AXSIG.
 	 */
-	// snprint(s->ac_flag);		/* Record flags */
+	// snprintllu(s->ac_flag);		/* Record flags */
 
   	/* The value of task_nice() of a task. */
-	// snprint(s->ac_nice);		/* task_nice */
+	// snprintllu(s->ac_nice);		/* task_nice */
 
   	/* The name of the command that started this task. */
 	// char	ac_comm[TS_COMM_LEN];	/* Command name */
+    l = snprintf(buf, len, "%s\t", s->ac_comm);
+    buf += l;
+    len -= l;
 
   	/* The scheduling discipline as set in task->policy field. */
-	// snprint(s->ac_sched);		/* Scheduling discipline */
+	// snprintllu(s->ac_sched);		/* Scheduling discipline */
 
-	// snprint(s->ac_pad[3]);
-	// snprint(s->ac_uid);			/* User ID */
-	// snprint(s->ac_gid);			/* Group ID */
-	// snprint(s->ac_pid);			/* Process ID */
-	// snprint(s->ac_ppid);		/* Parent process ID */
+	// snprintllu(s->ac_pad[3]);
+	// snprintllu(s->ac_uid);			/* User ID */
+	// snprintllu(s->ac_gid);			/* Group ID */
+	// snprintllu(s->ac_pid);			/* Process ID */
+	// snprintllu(s->ac_ppid);		/* Parent process ID */
 
   	/* The time when a task begins, in [secs] since 1970. */
-	// snprint(s->ac_btime);		/* Begin time [sec since 1970] */
+	snprintllu(s->ac_btime);		/* Begin time [sec since 1970] */
 
   	/* The elapsed time of a task, in [usec]. */
-	snprint(s->ac_etime);		/* Elapsed time [usec] */
+	snprintllu(s->ac_etime);		/* Elapsed time [usec] */
 
   	/* The user CPU time of a task, in [usec]. */
-	snprint(s->ac_utime);		/* User CPU time [usec] */
+	snprintllu(s->ac_utime);		/* User CPU time [usec] */
 
   	/* The system CPU time of a task, in [usec]. */
-	snprint(s->ac_stime);		/* System CPU time [usec] */
+	snprintllu(s->ac_stime);		/* System CPU time [usec] */
 
   	/* The minor page fault count of a task, as set in task->min_flt. */
-	snprint(s->ac_minflt);		/* Minor Page Fault Count */
+	snprintllu(s->ac_minflt);		/* Minor Page Fault Count */
 
 	/* The major page fault count of a task, as set in task->maj_flt. */
-	snprint(s->ac_majflt);		/* Major Page Fault Count */
+	snprintllu(s->ac_majflt);		/* Major Page Fault Count */
 
     /* 2) Delay accounting fields: */
 	/* Delay accounting fields start
@@ -191,20 +194,20 @@ char* task_stats2str(const struct TaskStatistics* stats, char* buf, size_t len) 
 	/* Delay waiting for cpu, while runnable
 	 * count, delay_total NOT updated atomically
 	 */
-	snprint(s->cpu_count);
-	snprint(s->cpu_delay_total);
+	snprintllu(s->cpu_count);
+	snprintllu(s->cpu_delay_total);
 
 	/* Following four fields atomically updated using task->delays->lock */
 
 	/* Delay waiting for synchronous block I/O to complete
 	 * does not account for delays in I/O submission
 	 */
-	snprint(s->blkio_count);
-	snprint(s->blkio_delay_total);
+	snprintllu(s->blkio_count);
+	snprintllu(s->blkio_delay_total);
 
 	/* Delay waiting for page fault I/O (swap in only) */
-	snprint(s->swapin_count);
-	snprint(s->swapin_delay_total);
+	snprintllu(s->swapin_count);
+	snprintllu(s->swapin_delay_total);
 
 	/* cpu "wall-clock" running time
 	 * On some architectures, value will adjust for cpu time stolen
@@ -212,7 +215,7 @@ char* task_stats2str(const struct TaskStatistics* stats, char* buf, size_t len) 
 	 * Value is cumulative, in nanoseconds, without a corresponding count
 	 * and wraps around to zero silently on overflow
 	 */
-	snprint(s->cpu_run_real_total);
+	snprintllu(s->cpu_run_real_total);
 
 	/* cpu "virtual" running time
 	 * Uses time intervals seen by the kernel i.e. no adjustment
@@ -220,7 +223,7 @@ char* task_stats2str(const struct TaskStatistics* stats, char* buf, size_t len) 
 	 * Value is cumulative, in nanoseconds, without a corresponding count
 	 * and wraps around to zero silently on overflow
 	 */
-	snprint(s->cpu_run_virtual_total);
+	snprintllu(s->cpu_run_virtual_total);
 	/* Delay accounting fields end */
 	/* version 1 ends here */
 
@@ -233,41 +236,41 @@ char* task_stats2str(const struct TaskStatistics* stats, char* buf, size_t len) 
 	 * will have memory usage multiplied by system time. Thus an
 	 * average usage per system time unit can be calculated.
 	 */
-	snprint(s->coremem);		/* accumulated RSS usage in MB-usec */
+	snprintllu(s->coremem);		/* accumulated RSS usage in MB-usec */
 
   	/* Accumulated virtual memory usage in duration of a task.
 	 * Same as acct_rss_mem1 above except that we keep track of VM usage.
 	 */
-	snprint(s->virtmem);		/* accumulated VM usage in MB-usec */
+	snprintllu(s->virtmem);		/* accumulated VM usage in MB-usec */
 
   	/* High watermark of RSS usage in duration of a task, in KBytes. */
-	snprint(s->hiwater_rss);		/* High-watermark of RSS usage */
+	snprintllu(s->hiwater_rss);		/* High-watermark of RSS usage */
 
   	/* High watermark of VM  usage in duration of a task, in KBytes. */
-	snprint(s->hiwater_vm);		/* High-water virtual memory usage */
+	snprintllu(s->hiwater_vm);		/* High-water virtual memory usage */
 
 	/* The following four fields are I/O statistics of a task. */
-	snprint(s->read_char);		/* bytes read */
-	snprint(s->write_char);		/* bytes written */
-	snprint(s->read_syscalls);		/* read syscalls */
-	snprint(s->write_syscalls);		/* write syscalls */
+	snprintllu(s->read_char);		/* bytes read */
+	snprintllu(s->write_char);		/* bytes written */
+	snprintllu(s->read_syscalls);		/* read syscalls */
+	snprintllu(s->write_syscalls);		/* write syscalls */
 
 	/* Extended accounting fields end */
 
     /* 4) Per-task and per-thread statistics */
-	snprint(s->nvcsw);			/* Context voluntary switch counter */
-	snprint(s->nivcsw);			/* Context involuntary switch counter */
+	snprintllu(s->nvcsw);			/* Context voluntary switch counter */
+	snprintllu(s->nivcsw);			/* Context involuntary switch counter */
 
     /* 5) Time accounting for SMT machines */
-	snprint(s->ac_utimescaled);		/* utime scaled on frequency etc */
-	snprint(s->ac_stimescaled);		/* stime scaled on frequency etc */
-	snprint(s->cpu_scaled_run_real_total); /* scaled cpu_run_real_total */
+	snprintllu(s->ac_utimescaled);		/* utime scaled on frequency etc */
+	snprintllu(s->ac_stimescaled);		/* stime scaled on frequency etc */
+	snprintllu(s->cpu_scaled_run_real_total); /* scaled cpu_run_real_total */
 
     /* 6) Extended delay accounting fields for memory reclaim
 	      Delay waiting for memory reclaim */
-	snprint(s->freepages_count);
-	snprint(s->freepages_delay_total);
-#undef snprint
+	snprintllu(s->freepages_count);
+	snprintllu(s->freepages_delay_total);
+#undef snprintllu
     return buf_orig;
 }
 
