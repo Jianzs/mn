@@ -26,6 +26,8 @@
 #include "queue.h"
 #include "taskstats.h"
 
+#define N_QUERY_THREAD 10
+
 int print_receive_error(struct sockaddr_nl* address,
                         struct nlmsgerr* error, void* arg) {
     fprintf(stderr, "Netlink receive error: %s\n", strerror(-error->error));
@@ -77,29 +79,6 @@ int parse_task_stats(struct nl_msg* msg, void* arg) {
     return NL_STOP;
 }
 
-struct TaskstatsThreadArgs {
-    struct ConcurrentQueue *que;
-    FILE *file;
-    int human_readable;
-};
-
-void * process_task_stats(void *arg) {
-    struct TaskstatsThreadArgs *args = (struct TaskstatsThreadArgs*)arg;
-    struct TaskStatistics *stats;
-    while ((stats = concurrent_queue_pop(args->que)) != NULL) {
-        if (args->file == NULL) {
-            print_task_stats(stats, args->human_readable);
-        } else {
-            char buf[200];
-            task_stats2str(stats, buf, 200);
-            fprintf(args->file, "%d\t%s\n", 
-                    get_ns_timestamp()%(10*MILL_SECOND), buf);
-        }
-        free(stats);
-    }
-    pthread_exit(NULL);
-}
-
 int send_task_stats_query(struct nl_sock* netlink_socket, int family_id,
                      int command_type, int parameter) {
     struct nl_msg* message = nlmsg_alloc();
@@ -109,6 +88,78 @@ int send_task_stats_query(struct nl_sock* netlink_socket, int family_id,
     int result = nl_send(netlink_socket, message);
     nlmsg_free(message);
     return result < 0;
+}
+
+struct ProcessThreadArgs {
+    struct ConcurrentQueue *que;
+    FILE *file;
+    int human_readable;
+};
+
+void * process_task_stats(void *arg) {
+    struct ProcessThreadArgs *args = (struct ProcessThreadArgs*)arg;
+    struct TaskStatistics *stats;
+    while ((stats = concurrent_queue_pop(args->que)) != NULL) {
+        if (args->file == NULL) {
+            print_task_stats(stats, args->human_readable);
+        } else {
+            char buf[200];
+            task_stats2str(stats, buf, 200);
+            fprintf(args->file, "%llu\t%s\n", get_ns_timestamp(), buf);
+        }
+        free(stats);
+    }
+    pthread_exit(NULL);
+}
+
+struct QueryThreadArgs {
+    struct nl_sock* netlink_socket;
+    int family_id;
+    int command_type;
+    int pid;
+    struct nl_cb* callbacks;
+};
+
+void signal_handler(int sig) {
+    printf("Caught signal %d\n", sig);
+}
+void * query_task_stats(void *arg) {
+    printf("++ query thread Hello\n");
+    signal(SIGUSR1, signal_handler);
+    printf("-- query thread Hello\n");
+    struct QueryThreadArgs *args = (struct QueryThreadArgs*)arg;
+
+    // sigset_t set;
+    // sigemptyset(&set);                                                             
+    // if(sigaddset(&set, SIGUSR1) == -1) {                                           
+    //     perror("Sigaddset error");                                                  
+    //     pthread_exit((void *)1);
+    // }
+
+    while (1) {
+        printf("~ before pause\n");
+        pause();
+        printf("@ after pause\n");
+        // int sig;
+        // int ret = sigwait(&set, &sig);
+        // if(ret || sig != SIGUSR1) {                                                 
+        //     perror("Sigwait error");                                                    
+        //     pthread_exit((void *)2);                                                    
+        // }
+
+        int ret = send_task_stats_query(args->netlink_socket, args->family_id, 
+                                        args->command_type, args->pid);
+        if (ret) {
+            perror("Failed to query taskstats");
+            continue;
+        }
+
+        ret = nl_recvmsgs(args->netlink_socket, args->callbacks);
+        if (ret) {
+            perror("Failed to receive message\n");
+            continue;
+        }
+    }
 }
 
 void print_usage() {
@@ -226,14 +277,14 @@ int main(int argc, char** argv) {
     concurrent_queue_init(&que);
     
     /* create thread for processing task stats */
-    struct TaskstatsThreadArgs args = {
+    struct ProcessThreadArgs process_args = {
         .que = &que,
         .file = out_file,
         .human_readable = human_readable
     };
     pthread_t process_task_stats_thread;
     ret = pthread_create(&process_task_stats_thread, NULL, &process_task_stats, 
-                        (void *)(&args));
+                         (void *)(&process_args));
     if (ret) {
         fprintf(stderr, "Unable to create thread, %d\n", ret);
         goto error;
@@ -244,34 +295,89 @@ int main(int argc, char** argv) {
     nl_cb_set(callbacks, NL_CB_MSG_IN, NL_CB_CUSTOM, &parse_task_stats, &que);
     nl_cb_err(callbacks, NL_CB_CUSTOM, &print_receive_error, &family_id);
     
+    /* create thread for send task stats query */
+    struct QueryThreadArgs query_args = {
+        .netlink_socket = netlink_socket,
+        .family_id = family_id,
+        .command_type = command_type,
+        .pid = pid,
+        .callbacks = callbacks
+    };
+    pthread_t query_task_stats_threads[N_QUERY_THREAD];
+    for (int i = 0; i < N_QUERY_THREAD; i++) {
+        ret = pthread_create(&query_task_stats_threads[i], NULL, &query_task_stats, 
+                             (void *)(&query_args));
+        if (ret) {
+            fprintf(stderr, "Unable to create thread, %d\n", ret);
+            goto error;
+        }
+    }
+    
+    sleep(1);
+
     /* run custom command */
     if (custom_cmd_len) {
         signal(SIGCHLD, SIG_IGN); // avoid <defunct> child process 
         pid = exec_command(custom_cmd_len, custom_cmd_arg, custom_cmd_out);
     }
 
+    
+
     /* monitor the target process */
+    unsigned long long kill_total, send_total, recv_total;
+    unsigned long long kill_max, send_max, recv_max;
+    unsigned cnt = 0;
+    kill_total = send_total = recv_total = 0;
+    kill_max = send_max = recv_max = 0;
+    int query_thread_idx = 0;
     time_t t_next_iter = get_ns_timestamp();
     do {
-        ret = send_task_stats_query(netlink_socket, family_id, command_type, pid);
-        if (ret) {
-            nl_perror(ret, "Failed to query taskstats");
-            goto error;
-        }
-        ret = nl_recvmsgs(netlink_socket, callbacks);
-        if (ret) {
-            nl_perror(ret, "Failed to receive message");
-            goto error;
-        }
+        time_t ts_b_kill = get_ns_timestamp();
+        int killed = kill(pid, 0); // after being killed, query the last time
+        time_t ts_a_kill = get_ns_timestamp();
 
-        if (kill(pid, 0)) {
+        // printf("** kill\n");
+        ret = pthread_kill(query_task_stats_threads[query_thread_idx], SIGUSR1);
+        if (ret) {
+            fprintf(stderr, "Kill query thread failed, %d\n", ret);
+            goto error;
+        }
+        query_thread_idx = (query_thread_idx+1) % N_QUERY_THREAD;
+
+        
+        // ret = send_task_stats_query(netlink_socket, family_id, command_type, pid);
+        // if (ret) {
+        //     nl_perror(ret, "Failed to query taskstats");
+        //     goto error;
+        // }
+        time_t ts_a_send = get_ns_timestamp();
+        // ret = nl_recvmsgs(netlink_socket, callbacks);
+        // if (ret) {
+        //     nl_perror(ret, "Failed to receive message");
+        //     goto error;
+        // }
+        // time_t ts_a_recv = get_ns_timestamp();
+        if (killed) {
             break;
         }
+        kill_total += ts_a_kill - ts_b_kill;
+        send_total += ts_a_send - ts_a_kill;
+        // recv_total += ts_a_recv - ts_a_send;
+#define max(a, b) (a > b ? a : b)
+        kill_max = max(kill_max, ts_a_kill - ts_b_kill);
+        send_max = max(send_max, ts_a_send - ts_a_kill);
+        // recv_max = max(recv_max, ts_a_recv - ts_a_send);
+        cnt ++;
         t_next_iter += period;
         sleep_until(t_next_iter);
     } while (1);
     concurrent_queue_push(&que, NULL);
     
+    printf("%lf %lf %lf\n", kill_total*1./cnt, send_total*1./cnt, recv_total*1./cnt);
+    printf("%llu %llu %llu\n", kill_max, send_max, recv_max);
+
+    pthread_join(query_task_stats_threads[0], NULL);
+
     nl_cb_put(callbacks);
     nl_socket_free(netlink_socket);
     return EXIT_SUCCESS;
