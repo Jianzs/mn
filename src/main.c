@@ -85,11 +85,15 @@ struct TaskstatsThreadArgs {
 void * process_task_stats(void *arg) {
     struct TaskstatsThreadArgs *args = (struct TaskstatsThreadArgs*)arg;
     struct TaskStatistics *stats;
-    char buf[200];
     while ((stats = concurrent_queue_pop(args->que)) != NULL) {
-        // print_task_stats(stats);
-        task_stats2str(stats, buf, 200);
-        fprintf(args->file, "%d\t%s\n", get_ns_timestamp()%(10*MILL_SECOND), buf);
+        if (args->file == NULL) {
+            print_task_stats(stats);
+        } else {
+            char buf[200];
+            task_stats2str(stats, buf, 200);
+            fprintf(args->file, "%d\t%s\n", 
+                    get_ns_timestamp()%(10*MILL_SECOND), buf);
+        }
         free(stats);
     }
     pthread_exit(NULL);
@@ -132,7 +136,7 @@ int main(int argc, char** argv) {
     int command_type = 0;
     int pid = 0;
     int human_readable = 1;
-    FILE *out_file = stdout;
+    FILE *out_file = NULL;
     int custom_cmd_len = 0;
     char **custom_cmd_arg = NULL;
     char *custom_cmd_out = NULL;
