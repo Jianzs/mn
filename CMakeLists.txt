@@ -9,5 +9,5 @@ include_directories(include /usr/include/libnl3)
 aux_source_directory(src source_list)
 add_executable(mn ${source_list})
 
-target_link_libraries(mn nl-3 nl-genl-3)
+target_link_libraries(mn nl-3 nl-genl-3 pthread)
 # target_link_libraries(mn nl)
